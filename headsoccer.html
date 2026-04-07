@@ -1,0 +1,486 @@
+ <!DOCTYPE html>          
+  <html lang="en">
+  <head>
+  <meta charset="UTF-8">                                                                                                                       <title>Head Soccer</title>
+  <style>                                                                                                                                    
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #07070f;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      font-family: 'Arial Black', Impact, sans-serif;
+      user-select: none;
+    }
+    #bar { color: #555; font-size: 12px; margin-bottom: 7px; letter-spacing: .5px; }
+    .c1  { color: #4af; }
+    .c2  { color: #f44; }
+    canvas {
+      border: 2px solid #1c1c38;
+      border-radius: 6px;
+      box-shadow: 0 0 55px rgba(50,100,255,.22);
+    }
+  </style>
+  </head>
+  <body>
+  <p id="bar">
+    <span class="c1">P1 — A/D: move · W: jump · SPACE: power kick</span>
+    &nbsp;·&nbsp;
+    <span class="c2">P2 — ←/→: move · ↑: jump · M: power kick</span>
+  </p>
+  <canvas id="c" width="800" height="480"></canvas>
+  <script>
+  // ─────────────────────────────────────────────────────────────────────────────
+  //  HEAD SOCCER  ·  single-file HTML5 canvas game
+  // ─────────────────────────────────────────────────────────────────────────────
+  const cv  = document.getElementById('c');
+  const ctx = cv.getContext('2d');
+  const W = 800, H = 480;
+  const FLOOR = 415;          // y of the ground line
+  const GRAV  = 0.56;         // gravity per frame
+  const WIN   = 5;            // goals needed to win
+
+  // Goal geometry
+  const GW = 90;              // goal depth  (x extent)
+  const GH = 150;             // goal height (y extent)
+  const GT = FLOOR - GH;      // crossbar y  (= 265)
+
+  // ─── input ───────────────────────────────────────────────────────────────────
+  const keys = {};
+  window.addEventListener('keydown', e => {
+    keys[e.code] = true;
+    e.preventDefault();
+    if (e.code === 'Enter' && gameState === 'over') init();
+  });
+  window.addEventListener('keyup', e => { keys[e.code] = false; });
+
+  // ─── state ───────────────────────────────────────────────────────────────────
+  let ball, p1, p2, score, gameState, goalTimer, scorer;
+
+  function makeBall() {
+    return { x: W / 2, y: 88, vx: (Math.random() * 6 - 3), vy: 0, r: 20, spin: 0 };
+  }
+  function makePlayer(x, col, faceDir) {
+    return { x, y: FLOOR - 38, vx: 0, vy: 0, r: 38, col,
+             f: faceDir, onGround: false, kcd: 0, jumpLock: false };
+  }
+  function resetRound() {
+    ball = makeBall();
+    p1   = makePlayer(175, '#1a6fff',  1);
+    p2   = makePlayer(625, '#ff1a1a', -1);
+    gameState = 'playing';
+  }
+  function init() {
+    score = [0, 0]; scorer = -1; goalTimer = 0;
+    resetRound();
+  }
+
+  // ─── physics ─────────────────────────────────────────────────────────────────
+  const clamp = (v, lo, hi) => v < lo ? lo : v > hi ? hi : v;
+
+  function resolveCircles(a, b) {
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const d  = Math.hypot(dx, dy);
+    const mn = a.r + b.r;
+    if (d >= mn || d < 0.01) return;
+
+    const nx = dx / d, ny = dy / d;
+    const pen = mn - d + 0.5;
+
+    // Ball is light; player is heavy (mass 9 vs 1)
+    const ballIsB = (b === ball);
+    const pushB   = ballIsB ? 0.97 : 0.5;
+    a.x -= nx * pen * (1 - pushB);
+    a.y -= ny * pen * (1 - pushB);
+    b.x += nx * pen * pushB;
+    b.y += ny * pen * pushB;
+
+    const rvn = (b.vx - a.vx) * nx + (b.vy - a.vy) * ny;
+    if (rvn >= 0) return;
+
+    const e  = (a === ball || b === ball) ? 1.1 : 0.35;
+    const mA = (a === ball) ? 1 : 9;
+    const mB = (b === ball) ? 1 : 9;
+    const j  = -(1 + e) * rvn / (1 / mA + 1 / mB);
+
+    a.vx -= j / mA * nx;  a.vy -= j / mA * ny;
+    b.vx += j / mB * nx;  b.vy += j / mB * ny;
+
+    if (a !== ball) a.vx = clamp(a.vx, -8, 8);
+    if (b !== ball) b.vx = clamp(b.vx, -8, 8);
+  }
+
+  // ─── player update ───────────────────────────────────────────────────────────
+  function updatePlayer(p, Lk, Rk, Jk, Kk) {
+    if      (keys[Lk]) { p.vx = -5.5; p.f = -1; }
+    else if (keys[Rk]) { p.vx =  5.5; p.f =  1; }
+    else               p.vx *= 0.78;
+
+    if (keys[Jk] && p.onGround && !p.jumpLock) {
+      p.vy = -14.5;
+      p.jumpLock = true;
+    }
+    if (!keys[Jk]) p.jumpLock = false;
+
+    if (keys[Kk] && p.kcd <= 0) {
+      const dx = ball.x - p.x, dy = ball.y - p.y;
+      const d  = Math.hypot(dx, dy);
+      if (d < p.r + ball.r + 42) {
+        const nx = dx / d, ny = dy / d;
+        ball.vx = nx * 25 + p.vx * 0.4;
+        ball.vy = ny * 23 - 5;
+        ball.spin += ball.vx * 0.22;
+        p.kcd = 22;
+      }
+    }
+    if (p.kcd > 0) p.kcd--;
+
+    p.vy += GRAV;
+    p.x  += p.vx;
+    p.y  += p.vy;
+
+    if (p.y + p.r >= FLOOR)  { p.y = FLOOR - p.r;  p.vy = 0; p.onGround = true;  }
+    else                       p.onGround = false;
+    if (p.y - p.r < 50)       { p.y = 50 + p.r;    p.vy = 0; }
+    if (p.x - p.r < GW)       { p.x = GW   + p.r;  p.vx = 0; }
+    if (p.x + p.r > W - GW)   { p.x = W-GW - p.r;  p.vx = 0; }
+  }
+
+  // ─── ball update ─────────────────────────────────────────────────────────────
+  function updateBall() {
+    ball.vy   += GRAV;
+    ball.vx   *= 0.993;
+    ball.x    += ball.vx;
+    ball.y    += ball.vy;
+    ball.spin  = ball.spin * 0.97 + ball.vx * 0.025;
+
+    // Floor bounce
+    if (ball.y + ball.r >= FLOOR) {
+      ball.y  = FLOOR - ball.r;
+      ball.vy = -Math.abs(ball.vy) * 0.62;
+      ball.vx *= 0.84;
+      if (Math.abs(ball.vy) < 1.2) ball.vy = 0;
+    }
+    // Ceiling
+    if (ball.y - ball.r < 50) { ball.y = 50 + ball.r; ball.vy = Math.abs(ball.vy); }
+
+    // ── Goal scoring: ball centre crosses inner post while below the crossbar ──
+    if (ball.x < GW     && ball.y > GT) { triggerGoal(1); return; }
+    if (ball.x > W - GW && ball.y > GT) { triggerGoal(0); return; }
+
+    // Side walls (only reached above goal height)
+    if (ball.x - ball.r < 0)    { ball.x = ball.r;     ball.vx =  Math.abs(ball.vx) * 0.7; }
+    if (ball.x + ball.r > W)    { ball.x = W - ball.r; ball.vx = -Math.abs(ball.vx) * 0.7; }
+
+    // Post corner deflection
+    deflectPost(GW,     GT);
+    deflectPost(W - GW, GT);
+  }
+
+  function triggerGoal(player) {
+    score[player]++;
+    scorer    = player;
+    gameState = 'goal';
+    goalTimer = 148;
+  }
+
+  function deflectPost(cx, cy) {
+    const dx = ball.x - cx, dy = ball.y - cy;
+    const d  = Math.hypot(dx, dy);
+    if (d >= ball.r || d < 0.01) return;
+    const nx = dx / d, ny = dy / d;
+    ball.x = cx + nx * (ball.r + 1);
+    ball.y = cy + ny * (ball.r + 1);
+    const dot = ball.vx * nx + ball.vy * ny;
+    if (dot < 0) { ball.vx -= 2 * dot * nx * 0.65; ball.vy -= 2 * dot * ny * 0.65; }
+  }
+
+  // ─── colour helpers ──────────────────────────────────────────────────────────
+  const hexCh  = (h, i) => parseInt(h.slice(1 + i*2, 3 + i*2), 16);
+  const lighten = (h, n) => `rgb(${Math.min(255, hexCh(h,0)+n)},${Math.min(255, hexCh(h,1)+n)},${Math.min(255, hexCh(h,2)+n)})`;
+  const darken  = (h, n) => `rgb(${Math.max(0,   hexCh(h,0)-n)},${Math.max(0,   hexCh(h,1)-n)},${Math.max(0,   hexCh(h,2)-n)})`;
+
+  function rrect(x, y, w, hh, r) {
+    ctx.beginPath();
+    ctx.moveTo(x+r, y);          ctx.lineTo(x+w-r, y);
+    ctx.quadraticCurveTo(x+w, y,   x+w, y+r);   ctx.lineTo(x+w, y+hh-r);
+    ctx.quadraticCurveTo(x+w, y+hh, x+w-r, y+hh); ctx.lineTo(x+r, y+hh);
+    ctx.quadraticCurveTo(x, y+hh, x, y+hh-r);   ctx.lineTo(x, y+r);
+    ctx.quadraticCurveTo(x, y,   x+r, y);
+    ctx.closePath();
+  }
+
+  // ─── draw: background ────────────────────────────────────────────────────────
+  function drawBackground() {
+    // HUD strip
+    ctx.fillStyle = '#04040c';
+    ctx.fillRect(0, 0, W, 50);
+
+    // Night sky
+    const sky = ctx.createLinearGradient(0, 50, 0, FLOOR);
+    sky.addColorStop(0, '#0b1535');
+    sky.addColorStop(1, '#173870');
+    ctx.fillStyle = sky;
+    ctx.fillRect(0, 50, W, FLOOR - 50);
+
+    // Stars (deterministic so they don't flicker)
+    ctx.fillStyle = 'rgba(255,255,255,.75)';
+    for (let i = 0; i < 60; i++) {
+      const sx = (i * 157 + 23) % W;
+      const sy = 55 + ((i * 113 + 9) % (FLOOR - 100));
+      ctx.beginPath();
+      ctx.arc(sx, sy, i % 7 === 0 ? 1.5 : 0.7, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // Grass
+    const grass = ctx.createLinearGradient(0, FLOOR, 0, H);
+    grass.addColorStop(0, '#1e7c1e');
+    grass.addColorStop(1, '#155015');
+    ctx.fillStyle = grass;
+    ctx.fillRect(0, FLOOR, W, H - FLOOR);
+    for (let i = 0; i < W; i += 70) {
+      ctx.fillStyle = (i % 140 === 0) ? 'rgba(0,0,0,.07)' : 'rgba(255,255,255,.025)';
+      ctx.fillRect(i, FLOOR, 70, H - FLOOR);
+    }
+
+    // Centre dashed line
+    ctx.strokeStyle = 'rgba(255,255,255,.2)';
+    ctx.setLineDash([5, 5]); ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(W/2, 50); ctx.lineTo(W/2, FLOOR); ctx.stroke();
+    ctx.setLineDash([]);
+    // Centre arc on ground
+    ctx.beginPath(); ctx.arc(W/2, FLOOR, 68, Math.PI, 0); ctx.stroke();
+  }
+
+  // ─── draw: goals ─────────────────────────────────────────────────────────────
+  function drawGoals() {
+    [false, true].forEach(right => {
+      const gl = right ? W - GW : 0;    // goal left x
+      const gr = right ? W      : GW;   // goal right x
+      const px = right ? W - GW : GW;   // inner post x
+      const bx = right ? W      : 0;    // back wall x
+
+      // Net fill
+      ctx.fillStyle = 'rgba(255,255,255,.028)';
+      ctx.fillRect(gl, GT, GW, GH);
+
+      // Net grid
+      ctx.strokeStyle = 'rgba(255,255,255,.08)'; ctx.lineWidth = 1;
+      for (let x = gl; x <= gr; x += 16) {
+        ctx.beginPath(); ctx.moveTo(x, GT); ctx.lineTo(x, FLOOR); ctx.stroke();
+      }
+      for (let y = GT; y <= FLOOR; y += 16) {
+        ctx.beginPath(); ctx.moveTo(gl, y); ctx.lineTo(gr, y); ctx.stroke();
+      }
+
+      // Goal frame: top bar → back post down to floor
+      ctx.strokeStyle = '#ddd'; ctx.lineWidth = 7; ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(px, GT); ctx.lineTo(bx, GT); ctx.lineTo(bx, FLOOR);
+      ctx.stroke(); ctx.lineCap = 'butt';
+
+      // Post knob
+      ctx.fillStyle = '#c0c0c0';
+      ctx.beginPath(); ctx.arc(px, GT, 9, 0, Math.PI * 2); ctx.fill();
+    });
+  }
+
+  // ─── draw: ball ──────────────────────────────────────────────────────────────
+  function drawBall() {
+    // Shadow
+    ctx.fillStyle = 'rgba(0,0,0,.22)';
+    ctx.beginPath();
+    ctx.ellipse(ball.x, FLOOR - 3, ball.r * 0.75, 7, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.save();
+    ctx.translate(ball.x, ball.y);
+    ctx.rotate(ball.spin);
+
+    // Body
+    const bg = ctx.createRadialGradient(-ball.r * .3, -ball.r * .3, 1, 0, 0, ball.r);
+    bg.addColorStop(0, '#fff'); bg.addColorStop(.45, '#ddd'); bg.addColorStop(1, '#888');
+    ctx.fillStyle = bg;
+    ctx.beginPath(); ctx.arc(0, 0, ball.r, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = '#555'; ctx.lineWidth = 1; ctx.stroke();
+
+    // Soccer patches
+    ctx.fillStyle = '#1a1a1a';
+    ctx.beginPath(); ctx.arc(0, 0, ball.r * .38, 0, Math.PI * 2); ctx.fill();
+    for (let i = 0; i < 5; i++) {
+      const a = (i / 5) * Math.PI * 2 - Math.PI / 2;
+      ctx.beginPath();
+      ctx.arc(Math.cos(a) * ball.r * .63, Math.sin(a) * ball.r * .63, ball.r * .26, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  // ─── draw: player ────────────────────────────────────────────────────────────
+  function drawPlayer(p) {
+    // Ground shadow (pre-translate)
+    ctx.fillStyle = 'rgba(0,0,0,.18)';
+    ctx.beginPath();
+    ctx.ellipse(p.x, FLOOR - 2, p.r * .82, 9, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.save();
+    ctx.translate(p.x, p.y);
+
+    // Kick charge glow
+    if (p.kcd > 0) {
+      const t = p.kcd / 22;
+      const pulse = p.r + 8 + Math.sin(Date.now() * 0.025) * 3;
+      ctx.strokeStyle = `rgba(255,230,0,${t * .9})`;
+      ctx.lineWidth = 5;
+      ctx.beginPath(); ctx.arc(0, 0, pulse, 0, Math.PI * 2); ctx.stroke();
+    }
+
+    // Body (radial gradient)
+    const bg = ctx.createRadialGradient(p.f * (-13), -13, 2, 0, 0, p.r);
+    bg.addColorStop(0, lighten(p.col, 72)); bg.addColorStop(1, p.col);
+    ctx.fillStyle = bg;
+    ctx.beginPath(); ctx.arc(0, 0, p.r, 0, Math.PI * 2); ctx.fill();
+
+    // Hair cap: dark top-half arc (π → 0 clockwise traverses through the top)
+    ctx.fillStyle = darken(p.col, 48);
+    ctx.beginPath();
+    ctx.arc(0, 0, p.r, Math.PI, 0, false);
+    ctx.closePath(); ctx.fill();
+
+    // Outline
+    ctx.strokeStyle = darken(p.col, 58); ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(0, 0, p.r, 0, Math.PI * 2); ctx.stroke();
+
+    // Face features clipped to body circle
+    ctx.save();
+    ctx.beginPath(); ctx.arc(0, 0, p.r, 0, Math.PI * 2); ctx.clip();
+
+    const ex = p.f * 15;
+    // Eye white
+    ctx.fillStyle = '#fff';
+    ctx.beginPath(); ctx.ellipse(ex, -7, 9, 11, 0, 0, Math.PI * 2); ctx.fill();
+    // Pupil
+    ctx.fillStyle = '#111';
+    ctx.beginPath(); ctx.arc(ex + p.f * 3, -6, 5, 0, Math.PI * 2); ctx.fill();
+    // Shine
+    ctx.fillStyle = 'rgba(255,255,255,.88)';
+    ctx.beginPath(); ctx.arc(ex + p.f * 5, -9.5, 2, 0, Math.PI * 2); ctx.fill();
+
+    ctx.restore(); // unclip
+
+    // Smile
+    ctx.strokeStyle = '#331100'; ctx.lineWidth = 2.5;
+    ctx.beginPath(); ctx.arc(ex * 0.3, 13, 9, 0.12, Math.PI - 0.12); ctx.stroke();
+
+    ctx.restore();
+  }
+
+  // ─── draw: HUD ───────────────────────────────────────────────────────────────
+  function drawHUD() {
+    ctx.fillStyle = 'rgba(0,0,0,.8)';
+    rrect(W/2 - 118, 3, 236, 44, 10); ctx.fill();
+    ctx.strokeStyle = '#22224a'; ctx.lineWidth = 1.5;
+    rrect(W/2 - 118, 3, 236, 44, 10); ctx.stroke();
+
+    ctx.textAlign = 'center';
+    ctx.font = 'bold 14px Arial Black';
+    ctx.fillStyle = '#4af'; ctx.fillText('P1', W/2 - 68, 30);
+    ctx.fillStyle = '#f44'; ctx.fillText('P2', W/2 + 68, 30);
+
+    ctx.font = 'bold 27px Arial Black'; ctx.fillStyle = '#fff';
+    ctx.fillText(score[0], W/2 - 32, 37);
+    ctx.font = 'bold 18px Arial'; ctx.fillStyle = '#666';
+    ctx.fillText('–', W/2, 35);
+    ctx.font = 'bold 27px Arial Black'; ctx.fillStyle = '#fff';
+    ctx.fillText(score[1], W/2 + 32, 37);
+
+    ctx.font = '10px Arial'; ctx.fillStyle = '#44446a';
+    ctx.fillText(`First to ${WIN}`, W/2, 52);
+  }
+
+  // ─── draw: goal celebration ──────────────────────────────────────────────────
+  function drawGoalScreen() {
+    const t = (148 - goalTimer) / 148;
+    ctx.fillStyle = `rgba(0,0,0,${Math.min(.55, t * 1.8) * .65})`;
+    ctx.fillRect(0, 0, W, H);
+
+    const scale = 0.68 + t * 0.52;
+    ctx.save();
+    ctx.translate(W / 2, H / 2 - 18);
+    ctx.scale(scale, scale);
+    ctx.textAlign = 'center';
+    ctx.font = 'bold 94px Arial Black';
+    ctx.strokeStyle = '#9c2e00'; ctx.lineWidth = 10;
+    ctx.strokeText('GOAL!', 0, 0);
+    ctx.fillStyle = '#ffd700';
+    ctx.shadowColor = '#ff5200'; ctx.shadowBlur = 32;
+    ctx.fillText('GOAL!', 0, 0);
+    ctx.shadowBlur = 0;
+    ctx.restore();
+
+    ctx.font = 'bold 24px Arial'; ctx.textAlign = 'center';
+    ctx.fillStyle = (scorer === 0) ? '#4af' : '#f44';
+    ctx.fillText(`Player ${scorer + 1} scores!`, W / 2, H / 2 + 50);
+  }
+
+  // ─── draw: game over ─────────────────────────────────────────────────────────
+  function drawGameOver() {
+    ctx.fillStyle = 'rgba(0,0,0,.87)';
+    ctx.fillRect(0, 0, W, H);
+
+    const w = (score[0] >= WIN) ? 0 : 1;
+    ctx.textAlign = 'center';
+    ctx.font = 'bold 68px Arial Black';
+    ctx.fillStyle = '#ffd700';
+    ctx.shadowColor = '#ff6000'; ctx.shadowBlur = 22;
+    ctx.fillText('GAME OVER', W / 2, H / 2 - 65);
+    ctx.shadowBlur = 0;
+
+    ctx.font = 'bold 37px Arial Black';
+    ctx.fillStyle = (w === 0) ? '#4af' : '#f44';
+    ctx.fillText(`Player ${w + 1} Wins!`, W / 2, H / 2 - 8);
+
+    ctx.font = '28px Arial'; ctx.fillStyle = '#bbb';
+    ctx.fillText(`${score[0]}  –  ${score[1]}`, W / 2, H / 2 + 46);
+
+    ctx.font = '18px Arial'; ctx.fillStyle = '#555';
+    ctx.fillText('Press ENTER to play again', W / 2, H / 2 + 100);
+  }
+
+  // ─── main loop ───────────────────────────────────────────────────────────────
+  function update() {
+    if (gameState === 'playing') {
+      updatePlayer(p1, 'KeyA',     'KeyD',      'KeyW',    'Space');
+      updatePlayer(p2, 'ArrowLeft','ArrowRight', 'ArrowUp', 'KeyM');
+      updateBall();
+      resolveCircles(p1, ball);
+      resolveCircles(p2, ball);
+      resolveCircles(p1, p2);
+      if (score[0] >= WIN || score[1] >= WIN) gameState = 'over';
+    } else if (gameState === 'goal') {
+      if (--goalTimer <= 0) resetRound();
+    }
+  }
+
+  function draw() {
+    ctx.clearRect(0, 0, W, H);
+    drawBackground();
+    drawGoals();
+    drawBall();
+    drawPlayer(p1);
+    drawPlayer(p2);
+    drawHUD();
+    if (gameState === 'goal') drawGoalScreen();
+    if (gameState === 'over') drawGameOver();
+  }
+
+  function loop() { update(); draw(); requestAnimationFrame(loop); }
+  init();
+  loop();
+  </script>
+  </body>
+  </html>
