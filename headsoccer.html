@@ -166,6 +166,10 @@
     // Ceiling
     if (ball.y - ball.r < 50) { ball.y = 50 + ball.r; ball.vy = Math.abs(ball.vy); }
 
+    // Crossbar deflection (prevents ball from entering goal from top)
+    deflectCrossbar(0, GW, GT);
+    deflectCrossbar(W - GW, W, GT);
+
     // ── Goal scoring: ball centre crosses inner post while below the crossbar ──
     if (ball.x < GW     && ball.y > GT) { triggerGoal(1); return; }
     if (ball.x > W - GW && ball.y > GT) { triggerGoal(0); return; }
@@ -195,6 +199,16 @@
     ball.y = cy + ny * (ball.r + 1);
     const dot = ball.vx * nx + ball.vy * ny;
     if (dot < 0) { ball.vx -= 2 * dot * nx * 0.65; ball.vy -= 2 * dot * ny * 0.65; }
+  }
+
+  function deflectCrossbar(glx, grx, cy) {
+    // Deflect ball off horizontal crossbar from above
+    // glx = goal left x, grx = goal right x, cy = crossbar y
+    if (ball.y - ball.r > cy || ball.y + ball.r < cy) return;
+    if (ball.x < glx || ball.x > grx) return;
+    
+    ball.y = cy + ball.r + 1;
+    ball.vy = Math.abs(ball.vy) * 0.65;
   }
 
   // ─── colour helpers ──────────────────────────────────────────────────────────
